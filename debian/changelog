@@ -1,3 +1,67 @@
+proxmox-kernel-7.0 (7.0.14-16) trixie; urgency=medium
+
+  * cherry-pick fixes for relevant CVEs, most notable ones:
+    - CVE-2026-68128: a VM with a passed-through Intel E810 virtual function
+      can corrupt host kernel stack memory through its RSS configuration
+    - CVE-2026-74701: an unprivileged local user can panic the host through
+      a tun device and Open vSwitch
+    - CVE-2026-68388: a malicious SMB server can read kernel heap memory of
+      a client that uses fallocate
+    - CVE-2026-72018: an unprivileged local user reaches an unchecked memcpy
+      in the SMC-D loopback device
+    - CVE-2026-80528: a CephFS reply parsed under memory pressure can oops
+      the host, with no attacker involved
+    - CVE-2026-74674: a page table could be freed while the CPU still had a
+      cached translation for it
+    - the other CVEs fixed in this release:
+      CVE-2026-74518, CVE-2026-72462, CVE-2026-72461, CVE-2026-74591,
+      CVE-2026-74594, CVE-2026-74266, CVE-2026-72036, CVE-2026-74492,
+      CVE-2026-72250, CVE-2026-64553, CVE-2026-68334, CVE-2026-68433,
+      CVE-2026-72217, CVE-2026-72367, CVE-2026-80530, CVE-2026-68442,
+      CVE-2026-68095, CVE-2026-74483, CVE-2026-74484, CVE-2026-74487,
+      CVE-2026-72420, CVE-2026-74375, CVE-2026-80527, CVE-2026-68396,
+      CVE-2026-72030, CVE-2026-72014, CVE-2026-72103, CVE-2026-74728,
+      CVE-2026-72031, CVE-2026-74743, CVE-2026-74744, CVE-2026-74612,
+      CVE-2026-64552, CVE-2026-68299, CVE-2026-72339, CVE-2026-74523,
+      CVE-2026-68293, CVE-2026-68133, CVE-2026-74317, CVE-2026-74513,
+      CVE-2026-74629, CVE-2026-68278, CVE-2026-68279, CVE-2026-68277,
+      CVE-2026-64546, CVE-2026-68239, CVE-2026-68374, CVE-2026-80620,
+      CVE-2026-74404, CVE-2026-74604
+
+  * cherry-pick fixes for bugs that have no CVE assigned yet, most notable
+    ones:
+    - use-after-free in the bridge multicast code, which removing a VLAN
+      from a bridge that still forwards multicast can trigger
+    - use-after-free in the transmit ring of a packet socket, which the root
+      user of an unprivileged container can reach in its own network
+      namespace
+    - the VXLAN receive path could read from and write to an invalid remote
+      after a bulk flush of the forwarding database
+    - a crafted SRv6 packet can overflow a 40-byte IPv4 option buffer by up
+      to 255 bytes once the inner packet reaches the TCP SYN path
+    - the nftables packet path queued notifications on a list that only the
+      configuration path locks, so a rule set with a quota object could
+      write through an already freed socket buffer
+    - KVM checked page write tracking only in the active address space,
+      which could desynchronize a shadow page table and trip a kernel BUG
+    - use-after-free of a USB device that is unplugged while a process still
+      has it open, as done for USB passthrough into a VM
+    - io-wq undercounted its workers when a worker creation callback was
+      canceled, so a task could run more io-wq workers than its limit
+      allows and take correspondingly longer to tear down its io_uring
+      context on exit
+    - further fixes for kernel TLS, TCP-AO, IPsec and FUSE
+
+  * fix a race in the NVMe/TCP request PDU allocation, where namespace
+    scanning in parallel damages page refcounts, which frees backstore pages
+    early and can panic hosts that use NVMe over TCP
+
+  * prevent the automatic loading of five more unused network protocol
+    modules, so that an unprivileged user cannot pull them in, and thus
+    their bugs, with a single socket call
+
+ -- Proxmox Support Team <support@proxmox.com>  Fri, 28 Aug 2026 19:31:50 +0200
+
 proxmox-kernel-7.0 (7.0.14-15) trixie; urgency=medium
 
   * cherry-pick fixes for relevant CVEs, most notable ones:
