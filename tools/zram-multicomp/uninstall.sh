@@ -15,45 +15,49 @@ read_metadata() {
 
 KVER=$(read_metadata "$META" KVER)
 
-if [[ ! "$KVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-pve$ ]]; then
+if [[ ! "$KVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+[A-Za-z0-9+._~-]*-pve$ ]]; then
   echo "invalid KVER in metadata: $KVER" >&2
   exit 2
 fi
 
 TARGET="/lib/modules/$KVER/updates/pve-zram-multicomp"
 
+refresh_module_index() {
+  if ! depmod -a "$KVER"; then
+    return 10
+  fi
+  if command -v update-initramfs >/dev/null 2>&1 && [[ -e "/boot/initrd.img-$KVER" ]]; then
+    update-initramfs -u -k "$KVER"
+  fi
+}
+
+rollback() {
+  install -d -m 0755 "$TARGET"
+  install -m 0644 "$backup" "$TARGET/zram.ko"
+  if ! refresh_module_index; then
+    echo "rollback warning: could not rebuild module index or initramfs for $KVER" >&2
+    return 11
+  fi
+}
+
 if [[ ! -e "$TARGET/zram.ko" ]]; then
   echo "No override module installed for $KVER"
+  if [[ -d "/lib/modules/$KVER" ]] && ! refresh_module_index; then
+    echo "warning: could not rebuild module index or initramfs for $KVER" >&2
+    exit 3
+  fi
   exit 0
 fi
 
 backup=$(mktemp)
 cp "$TARGET/zram.ko" "$backup"
-rollback() {
-  install -d -m 0755 "$TARGET"
-  install -m 0644 "$backup" "$TARGET/zram.ko"
-  depmod -a "$KVER"
-  if command -v update-initramfs >/dev/null 2>&1 && [[ -e "/boot/initrd.img-$KVER" ]]; then
-    update-initramfs -u -k "$KVER" || true
-  fi
-  rm -f "$backup"
-}
-
 rm -f "$TARGET/zram.ko"
 rmdir --ignore-fail-on-non-empty "$TARGET" 2>/dev/null || true
 
-if ! depmod -a "$KVER"; then
-  rollback
-  echo "depmod failed; restored override" >&2
+if ! refresh_module_index; then
+  rollback || exit 11
+  echo "module index or initramfs refresh failed; restored override" >&2
   exit 3
-fi
-
-if command -v update-initramfs >/dev/null 2>&1 && [[ -e "/boot/initrd.img-$KVER" ]]; then
-  if ! update-initramfs -u -k "$KVER"; then
-    rollback
-    echo "update-initramfs failed; restored override" >&2
-    exit 4
-  fi
 fi
 
 rm -f "$backup"

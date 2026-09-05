@@ -38,9 +38,6 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       should_build: ${{ github.event_name == 'pull_request' || steps.release.outputs.should_build == 'true' }}
       should_publish: ${{ github.event_name != 'pull_request' && steps.release.outputs.should_publish == 'true' }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-
     steps:
       - name: Checkout requested upstream PVE revision
         uses: actions/checkout@v4
@@ -49,6 +46,7 @@ jobs:
           ref: ${{ inputs.pve_ref || 'master' }}
           path: pve-upstream
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Resolve kernel metadata
         id: resolve
@@ -75,6 +73,7 @@ jobs:
         if: github.event_name != 'pull_request'
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           FORCE: ${{ inputs.force }}
           TAG: ${{ steps.resolve.outputs.tag }}
           KVER: ${{ steps.resolve.outputs.kver }}
@@ -137,11 +136,12 @@ jobs:
     env:
       CC: gcc-14
       HOSTCC: gcc-14
-      PVE_MIRROR: https://mirrors.ustc.edu.cn/proxmox/debian/pve
 
     steps:
       - name: Checkout automation code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Checkout requested upstream PVE revision
         uses: actions/checkout@v4
@@ -150,6 +150,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.pve_sha }}
           path: pve-upstream
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Install build tools
         run: |
@@ -217,6 +218,12 @@ jobs:
           cd out
           sha256sum -c "zram-multicomp-${KVER}.tar.zst.sha256"
           tar --zstd -tf "zram-multicomp-${KVER}.tar.zst" >/dev/null
+          metadata_kver=$(sed -n 's/^KVER="\(.*\)"$/\1/p' metadata.env)
+          metadata_pve_sha=$(sed -n 's/^PVE_SHA="\(.*\)"$/\1/p' metadata.env)
+          if [[ "$metadata_kver" != "$KVER" || "$metadata_pve_sha" != "$PVE_SHA" ]]; then
+            echo "artifact metadata does not match the requested build" >&2
+            exit 1
+          fi
 
       - name: Publish release
         shell: bash

@@ -18,7 +18,7 @@ read_metadata() {
 KVER=$(read_metadata "$META" KVER)
 VERMAGIC=$(read_metadata "$META" VERMAGIC)
 
-if [[ ! "$KVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-pve$ ]]; then
+if [[ ! "$KVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+[A-Za-z0-9+._~-]*-pve$ ]]; then
   echo "invalid KVER in metadata: $KVER" >&2
   exit 2
 fi
@@ -60,9 +60,15 @@ fi
 rollback() {
   rm -f "$TARGET/zram.ko"
   rmdir --ignore-fail-on-non-empty "$TARGET" 2>/dev/null || true
-  depmod -a "$KVER"
+  if ! depmod -a "$KVER"; then
+    echo "rollback warning: depmod failed for $KVER" >&2
+    return 10
+  fi
   if command -v update-initramfs >/dev/null 2>&1 && [[ -e "/boot/initrd.img-$KVER" ]]; then
-    update-initramfs -u -k "$KVER" || true
+    if ! update-initramfs -u -k "$KVER"; then
+      echo "rollback warning: update-initramfs failed for $KVER" >&2
+      return 11
+    fi
   fi
 }
 
@@ -73,21 +79,21 @@ fi
 install -d -m 0755 "$TARGET"
 install -m 0644 "$MODULE" "$TARGET/zram.ko"
 if ! depmod -a "$KVER"; then
-  rollback
+  rollback || exit 10
   echo "depmod failed; rolled back override" >&2
   exit 7
 fi
 
 resolved=$(modinfo -k "$KVER" -n zram 2>/dev/null || true)
 if [[ "$resolved" != "$TARGET/zram.ko" ]]; then
-  rollback
+  rollback || exit 10
   echo "depmod did not select the override module (resolved: $resolved); rolled back" >&2
   exit 8
 fi
 
 if command -v update-initramfs >/dev/null 2>&1 && [[ -e "/boot/initrd.img-$KVER" ]]; then
   if ! update-initramfs -u -k "$KVER"; then
-    rollback
+    rollback || exit 10
     echo "update-initramfs failed; rolled back override" >&2
     exit 9
   fi

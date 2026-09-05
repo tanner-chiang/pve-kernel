@@ -5,9 +5,13 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PVE_TREE=${1:?usage: build.sh <pve-kernel-tree> <output-dir>}
 OUT_DIR=${2:?usage: build.sh <pve-kernel-tree> <output-dir>}
 ARCH=${ARCH:-amd64}
+if [[ "$ARCH" != "amd64" ]]; then
+  echo "unsupported architecture: $ARCH (this workflow builds amd64 only)" >&2
+  exit 2
+fi
 PVE_DIST=${PVE_DIST:-trixie}
 PVE_REPO=${PVE_REPO:-pve-no-subscription}
-PVE_MIRROR=${PVE_MIRROR:-https://mirrors.ustc.edu.cn/proxmox/debian/pve}
+PVE_MIRROR=${PVE_MIRROR:-https://download.proxmox.com/debian/pve}
 UBUNTU_KERNEL_GIT=${UBUNTU_KERNEL_GIT:-https://git.proxmox.com/git/mirror_ubuntu-kernels.git}
 CC=${CC:-gcc-14}
 HOSTCC=${HOSTCC:-gcc-14}
@@ -130,12 +134,13 @@ if [[ "${VERMAGIC%% *}" != "$KVER" ]]; then
   exit 6
 fi
 
+modversions=$(modprobe --dump-modversions "$MODULE")
 while read -r expected_crc symbol; do
   if ! grep -q "^${expected_crc}[[:space:]]${symbol}[[:space:]]" "$KDIR/Module.symvers"; then
     echo "module version mismatch for symbol ${symbol}: expected ${expected_crc}" >&2
     exit 7
   fi
-done < <(modprobe --dump-modversions "$MODULE")
+done <<< "$modversions"
 
 PKGDIR="$WORK/package"
 mkdir -p "$PKGDIR/module" "$PKGDIR/scripts"

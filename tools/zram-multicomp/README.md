@@ -43,7 +43,7 @@ Scheduled workflows only run from the repository default branch, so the automati
 Download the release/archive that exactly matches the installed target kernel, for example `7.0.14-16-pve`.
 
 ```bash
-sha256sum -c ../zram-multicomp-7.0.14-16-pve.tar.zst.sha256
+sha256sum -c zram-multicomp-7.0.14-16-pve.tar.zst.sha256
 mkdir zram-multicomp
 cd zram-multicomp
 tar --zstd -xf ../zram-multicomp-7.0.14-16-pve.tar.zst
