@@ -1,0 +1,129 @@
+name: Build ZRAM multi-comp module
+
+on:
+  workflow_dispatch:
+    inputs:
+      pve_ref:
+        description: "Upstream proxmox/pve-kernel ref to build"
+        required: false
+        default: "master"
+      force:
+        description: "Rebuild and replace an existing release asset"
+        type: boolean
+        required: false
+        default: false
+  schedule:
+    - cron: "17 */6 * * *"
+  pull_request:
+    paths:
+      - ".github/workflows/zram-multicomp.yml"
+      - "tools/zram-multicomp/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zram-multicomp-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PVE_UPSTREAM: https://github.com/proxmox/pve-kernel.git
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout automation code
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl dpkg-dev git kmod \
+            libelf-dev libssl-dev mokutil rsync xz-utils zstd
+
+      - name: Checkout requested upstream PVE revision
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref='${{ inputs.pve_ref || 'master' }}'
+          git init -q /tmp/pve-upstream
+          git -C /tmp/pve-upstream remote add origin "$PVE_UPSTREAM"
+          git -C /tmp/pve-upstream fetch --depth=1 origin "$ref"
+          git -C /tmp/pve-upstream checkout --detach FETCH_HEAD
+
+          sha=$(git -C /tmp/pve-upstream rev-parse HEAD)
+          maj=$(awk -F= '$1=="KERNEL_MAJ" {gsub(/[[:space:]]/,"",$2); print $2}' /tmp/pve-upstream/Makefile)
+          min=$(awk -F= '$1=="KERNEL_MIN" {gsub(/[[:space:]]/,"",$2); print $2}' /tmp/pve-upstream/Makefile)
+          patch=$(awk -F= '$1=="KERNEL_PATCHLEVEL" {gsub(/[[:space:]]/,"",$2); print $2}' /tmp/pve-upstream/Makefile)
+          rel=$(awk -F= '$1=="KREL" {gsub(/[[:space:]]/,"",$2); print $2}' /tmp/pve-upstream/Makefile)
+          extra=$(awk -F= '$1=="KREL_EXTRA" {sub(/^[^=]*=/,""); gsub(/[[:space:]]/,""); print}' /tmp/pve-upstream/Makefile)
+          kver="${maj}.${min}.${patch}-${rel}${extra}-pve"
+          tag="zram-multicomp-${kver}"
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "kver=$kver" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether this kernel is already published
+        id: existing
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view '${{ steps.upstream.outputs.tag }}' --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build module against official Proxmox headers
+        id: build
+        if: github.event_name == 'pull_request' || steps.existing.outputs.exists != 'true' || inputs.force == true
+        shell: bash
+        run: |
+          set +e
+          sudo -E tools/zram-multicomp/build.sh /tmp/pve-upstream "$PWD/out"
+          rc=$?
+          set -e
+
+          if [ "$rc" -eq 75 ]; then
+            echo "headers_pending=true" >> "$GITHUB_OUTPUT"
+            echo "Official headers for ${{ steps.upstream.outputs.kver }} are not published yet; skipping."
+            exit 0
+          fi
+          exit "$rc"
+
+      - name: Upload workflow artifact
+        if: steps.build.outcome == 'success' && steps.build.outputs.headers_pending != 'true' && (github.event_name == 'pull_request' || steps.existing.outputs.exists != 'true' || inputs.force == true)
+        uses: actions/upload-artifact@v4
+        with:
+          name: zram-multicomp-${{ steps.upstream.outputs.kver }}
+          path: |
+            out/zram-multicomp-${{ steps.upstream.outputs.kver }}.tar.zst
+            out/zram-multicomp-${{ steps.upstream.outputs.kver }}.tar.zst.sha256
+            out/metadata.env
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish release
+        if: github.event_name != 'pull_request' && steps.build.outcome == 'success' && steps.build.outputs.headers_pending != 'true' && (steps.existing.outputs.exists != 'true' || inputs.force == true)
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ steps.upstream.outputs.tag }}'
+          asset="out/zram-multicomp-${{ steps.upstream.outputs.kver }}.tar.zst"
+          checksum="${asset}.sha256"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" "$checksum" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" "$asset" "$checksum" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "ZRAM multi-comp for ${{ steps.upstream.outputs.kver }}" \
+              --notes "Built from proxmox/pve-kernel commit ${{ steps.upstream.outputs.sha }}. Installs only an overriding zram.ko under updates/; the stock Proxmox module remains untouched."
+          fi
