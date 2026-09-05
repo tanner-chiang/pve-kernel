@@ -8,7 +8,7 @@ on:
         required: false
         default: "master"
       force:
-        description: "Rebuild and replace an existing release asset"
+        description: "Rebuild and replace an existing release"
         type: boolean
         required: false
         default: false
@@ -20,110 +20,229 @@ on:
       - "tools/zram-multicomp/**"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: zram-multicomp-${{ github.event_name }}
+  group: zram-multicomp-${{ github.event_name == 'pull_request' && github.ref || 'release' }}
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      pve_sha: ${{ steps.resolve.outputs.pve_sha }}
+      kver: ${{ steps.resolve.outputs.kver }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      should_build: ${{ github.event_name == 'pull_request' || steps.release.outputs.should_build == 'true' }}
+      should_publish: ${{ github.event_name != 'pull_request' && steps.release.outputs.should_publish == 'true' }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout requested upstream PVE revision
+        uses: actions/checkout@v4
+        with:
+          repository: proxmox/pve-kernel
+          ref: ${{ inputs.pve_ref || 'master' }}
+          path: pve-upstream
+          fetch-depth: 1
+
+      - name: Resolve kernel metadata
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          pve_sha=$(git -C pve-upstream rev-parse HEAD)
+          maj=$(awk -F= '$1=="KERNEL_MAJ" {gsub(/[[:space:]]/,"",$2); print $2}' pve-upstream/Makefile)
+          min=$(awk -F= '$1=="KERNEL_MIN" {gsub(/[[:space:]]/,"",$2); print $2}' pve-upstream/Makefile)
+          patch=$(awk -F= '$1=="KERNEL_PATCHLEVEL" {gsub(/[[:space:]]/,"",$2); print $2}' pve-upstream/Makefile)
+          rel=$(awk -F= '$1=="KREL" {gsub(/[[:space:]]/,"",$2); print $2}' pve-upstream/Makefile)
+          extra=$(awk -F= '$1=="KREL_EXTRA" {sub(/^[^=]*=/,""); gsub(/[[:space:]]/,""); print}' pve-upstream/Makefile)
+          kver="${maj}.${min}.${patch}-${rel}${extra}-pve"
+          tag="zram-multicomp-${kver}"
+
+          {
+            echo "pve_sha=$pve_sha"
+            echo "kver=$kver"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check existing release
+        id: release
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          FORCE: ${{ inputs.force }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+          KVER: ${{ steps.resolve.outputs.kver }}
+          PVE_SHA: ${{ steps.resolve.outputs.pve_sha }}
+          AUTOMATION_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$FORCE" == "true" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          expected_assets=(
+            "zram-multicomp-${KVER}.tar.zst"
+            "zram-multicomp-${KVER}.tar.zst.sha256"
+            "metadata.env"
+          )
+          existing_assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          complete=true
+          for asset in "${expected_assets[@]}"; do
+            if ! grep -Fxq "$asset" <<< "$existing_assets"; then
+              complete=false
+            fi
+          done
+
+          if [[ "$complete" == true ]]; then
+            metadata_dir=$(mktemp -d)
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern metadata.env --dir "$metadata_dir" >/dev/null
+            old_pve_sha=$(sed -n 's/^PVE_SHA="\(.*\)"$/\1/p' "$metadata_dir/metadata.env")
+            old_automation_sha=$(sed -n 's/^AUTOMATION_SHA="\(.*\)"$/\1/p' "$metadata_dir/metadata.env")
+            if [[ "$old_pve_sha" != "$PVE_SHA" || "$old_automation_sha" != "$AUTOMATION_SHA" ]]; then
+              complete=false
+            fi
+          fi
+
+          if [[ "$complete" == true ]]; then
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: prepare
+    if: needs.prepare.outputs.should_build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      headers_pending: ${{ steps.build.outputs.headers_pending }}
     env:
-      PVE_UPSTREAM: https://github.com/proxmox/pve-kernel.git
-      GH_TOKEN: ${{ github.token }}
+      CC: gcc-14
+      HOSTCC: gcc-14
+      PVE_MIRROR: https://mirrors.ustc.edu.cn/proxmox/debian/pve
 
     steps:
       - name: Checkout automation code
         uses: actions/checkout@v4
 
+      - name: Checkout requested upstream PVE revision
+        uses: actions/checkout@v4
+        with:
+          repository: proxmox/pve-kernel
+          ref: ${{ needs.prepare.outputs.pve_sha }}
+          path: pve-upstream
+          fetch-depth: 1
+
       - name: Install build tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential ca-certificates curl dpkg-dev git kmod \
+            binutils build-essential ca-certificates curl dpkg-dev gcc-14 git kmod \
             libelf-dev libssl-dev mokutil rsync xz-utils zstd
-
-      - name: Checkout requested upstream PVE revision
-        id: upstream
-        shell: bash
-        run: |
-          set -euo pipefail
-          ref='${{ inputs.pve_ref || 'master' }}'
-          git init -q /tmp/pve-upstream
-          git -C /tmp/pve-upstream remote add origin "$PVE_UPSTREAM"
-          git -C /tmp/pve-upstream fetch --depth=1 origin "$ref"
-          git -C /tmp/pve-upstream checkout --detach FETCH_HEAD
-
-          sha=$(git -C /tmp/pve-upstream rev-parse HEAD)
-          maj=$(awk -F= '$1=="KERNEL_MAJ" {gsub(/[[:space:]]/,"",$2); print $2}' /tmp/pve-upstream/Makefile)
-          min=$(awk -F= '$1=="KERNEL_MIN" {gsub(/[[:space:]]/,"",$2); print $2}' /tmp/pve-upstream/Makefile)
-          patch=$(awk -F= '$1=="KERNEL_PATCHLEVEL" {gsub(/[[:space:]]/,"",$2); print $2}' /tmp/pve-upstream/Makefile)
-          rel=$(awk -F= '$1=="KREL" {gsub(/[[:space:]]/,"",$2); print $2}' /tmp/pve-upstream/Makefile)
-          extra=$(awk -F= '$1=="KREL_EXTRA" {sub(/^[^=]*=/,""); gsub(/[[:space:]]/,""); print}' /tmp/pve-upstream/Makefile)
-          kver="${maj}.${min}.${patch}-${rel}${extra}-pve"
-          tag="zram-multicomp-${kver}"
-
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "kver=$kver" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Check whether this kernel is already published
-        id: existing
-        if: github.event_name != 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if gh release view '${{ steps.upstream.outputs.tag }}' --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Build module against official Proxmox headers
         id: build
-        if: github.event_name == 'pull_request' || steps.existing.outputs.exists != 'true' || inputs.force == true
         shell: bash
         run: |
           set +e
-          sudo -E tools/zram-multicomp/build.sh /tmp/pve-upstream "$PWD/out"
+          bash "$PWD/tools/zram-multicomp/build.sh" "$PWD/pve-upstream" "$PWD/out"
           rc=$?
           set -e
-
           if [ "$rc" -eq 75 ]; then
             echo "headers_pending=true" >> "$GITHUB_OUTPUT"
-            echo "Official headers for ${{ steps.upstream.outputs.kver }} are not published yet; skipping."
+            echo "Official headers for ${{ needs.prepare.outputs.kver }} are not published yet; skipping."
             exit 0
           fi
           exit "$rc"
 
       - name: Upload workflow artifact
-        if: steps.build.outcome == 'success' && steps.build.outputs.headers_pending != 'true' && (github.event_name == 'pull_request' || steps.existing.outputs.exists != 'true' || inputs.force == true)
+        if: steps.build.outcome == 'success' && steps.build.outputs.headers_pending != 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: zram-multicomp-${{ steps.upstream.outputs.kver }}
+          name: zram-multicomp-${{ needs.prepare.outputs.kver }}
           path: |
-            out/zram-multicomp-${{ steps.upstream.outputs.kver }}.tar.zst
-            out/zram-multicomp-${{ steps.upstream.outputs.kver }}.tar.zst.sha256
+            out/zram-multicomp-${{ needs.prepare.outputs.kver }}.tar.zst
+            out/zram-multicomp-${{ needs.prepare.outputs.kver }}.tar.zst.sha256
             out/metadata.env
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish release
-        if: github.event_name != 'pull_request' && steps.build.outcome == 'success' && steps.build.outputs.headers_pending != 'true' && (steps.existing.outputs.exists != 'true' || inputs.force == true)
+  publish:
+    needs: [prepare, build]
+    if: >
+      github.event_name != 'pull_request' &&
+      needs.build.result == 'success' &&
+      needs.build.outputs.headers_pending != 'true' &&
+      needs.prepare.outputs.should_publish == 'true' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      KVER: ${{ needs.prepare.outputs.kver }}
+      PVE_SHA: ${{ needs.prepare.outputs.pve_sha }}
+
+    steps:
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: zram-multicomp-${{ needs.prepare.outputs.kver }}
+          path: out
+
+      - name: Verify local build artifact
         shell: bash
         run: |
           set -euo pipefail
-          tag='${{ steps.upstream.outputs.tag }}'
-          asset="out/zram-multicomp-${{ steps.upstream.outputs.kver }}.tar.zst"
-          checksum="${asset}.sha256"
+          cd out
+          sha256sum -c "zram-multicomp-${KVER}.tar.zst.sha256"
+          tar --zstd -tf "zram-multicomp-${KVER}.tar.zst" >/dev/null
 
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" "$asset" "$checksum" --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Publish release
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="out/zram-multicomp-${KVER}.tar.zst"
+          checksum="${asset}.sha256"
+          metadata="out/metadata.env"
+          notes="Built from proxmox/pve-kernel commit ${PVE_SHA}. Installs only an overriding zram.ko under updates/; the stock Proxmox module remains untouched."
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$asset" "$checksum" "$metadata" --clobber --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes "$notes"
           else
-            gh release create "$tag" "$asset" "$checksum" \
+            gh release create "$TAG" "$asset" "$checksum" "$metadata" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "ZRAM multi-comp for ${{ steps.upstream.outputs.kver }}" \
-              --notes "Built from proxmox/pve-kernel commit ${{ steps.upstream.outputs.sha }}. Installs only an overriding zram.ko under updates/; the stock Proxmox module remains untouched."
+              --title "ZRAM multi-comp for $KVER" \
+              --notes "$notes"
           fi
+
+      - name: Verify published release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_dir=$(mktemp -d)
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$verify_dir"
+          cd "$verify_dir"
+          sha256sum -c "zram-multicomp-${KVER}.tar.zst.sha256"
+          tar --zstd -tf "zram-multicomp-${KVER}.tar.zst" >/dev/null
