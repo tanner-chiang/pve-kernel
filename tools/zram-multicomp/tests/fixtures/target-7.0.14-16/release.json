@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "fixture": true,
+  "trust": {"verified_by": "apt-secure", "release_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "packages": [
+    {"kind":"kernel","name":"proxmox-kernel-7.0.14-16-pve","version":"7.0.14-16","kver":"7.0.14-16-pve","architecture":"amd64","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","source_path":"kernel/usr/share/doc/proxmox-kernel-7.0.14-16-pve/SOURCE","source_sha256":"SOURCE_SHA","signed":false},
+    {"kind":"headers","name":"proxmox-headers-7.0.14-16-pve","version":"7.0.14-16","kver":"7.0.14-16-pve","architecture":"amd64","sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","config_path":"headers/usr/src/linux-headers-7.0.14-16-pve/.config","config_sha256":"CONFIG_SHA","module_symvers_path":"headers/usr/src/linux-headers-7.0.14-16-pve/Module.symvers","module_symvers_sha256":"SYMVERS_SHA"},
+    {"kind":"kernel","name":"proxmox-kernel-7.0.14-15-pve","version":"7.0.14-15","kver":"7.0.14-15-pve","architecture":"amd64","sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","source_path":"unused","source_sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","signed":false}
+  ],
+  "sources": [{"kver":"7.0.14-16-pve","pve_commit":"bd8cb4de0b98c34448da4bb160df7431e314cc07","ubuntu_kernel_commit":"68d75f0820869e33326712a9547550961795eaaf","source_snapshot_sha256":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","patches":[{"path":"patches/kernel/0001-fixture.patch","sha256":"1111111111111111111111111111111111111111111111111111111111111111"},{"path":"patches/kernel/0002-fixture.patch","sha256":"2222222222222222222222222222222222222222222222222222222222222222"}]}]
+}

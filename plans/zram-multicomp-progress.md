@@ -93,3 +93,78 @@ kernel 与精确 headers 包样本及其 `SOURCE`，或取得可验证、可有�
 源码快照。之后必须读取该目标的完整 ZRAM/Kconfig/依赖与文档，再评估配置宏。G2/G3
 则需要可恢复 PVE VM 的启动、包事务和 initramfs 并发实测；当前 QEMU/KVM 仅提供
 搭建该 VM 的基础条件。
+
+## 阶段 1：精确目标解析器与固定夹具（2026-09-06）
+
+**结论：固定夹具实现与聚焦测试完成；当时真实包身份 G1 尚未闭合。** 本阶段没有下载
+源码、构建或安装模块，也没有执行 apt 事务。`7.0.14-16-pve` 仅为 fixture 中的精确
+输入，`fixture-ready` 不是实际 PVE 包映射、精确源码可取得性、ABI 兼容性或启动测试
+的声明。
+
+### 基线与改动
+
+- 基线为 `bd8cb4d`（阶段 0 文档）；实施结束时未创建提交。
+- 新增 `tools/zram-multicomp/resolve.sh`、`lib/common.sh`、
+  `manifest-schema.json`、`ensure-headers.sh`、README、
+  `tests/test-resolve.sh` 和 `tests/fixtures/target-7.0.14-16/`。
+- 原有 `tools/zram-multicomp/tests/vm/README.md` 未修改，属于并行 VM 工作，
+  不在本阶段归属内。
+
+### 冻结接口与行为
+
+- resolver 输入为完整 `KVER`（保留 `KREL_EXTRA`）、架构、精确
+  `kernel-package NAME=VERSION`、release manifest、解包目录、缓存目录与输出路径；入口
+  目前必须显式传入 `--fixture`。成功和 `waiting-headers` target 会以
+  `(KVER, architecture, package name, package version)` 的 SHA-256 键缓存为
+  `target.json`。生产模式直接拒绝，直到实现受认证 apt 元数据的适配器。
+- 同一 KVER 的不同 Debian 修订必须由完整 `NAME=VERSION` 区分；解析器要求唯一的
+  kernel、headers 和 source mapping，未知、歧义或缺 `SOURCE` 都写出
+  `unsupported`，不会猜测最近版本。
+- `SOURCE` 按文本解析，不执行内容；它导出 PVE commit，随后选择固定的 Ubuntu
+  gitlink、源码快照摘要和完整 patch 摘要清单。headers 仅在同一 KVER/架构且解包出的
+  `.config` 与 `Module.symvers` 摘要匹配时为 ready。
+- 缺失解包 headers 时输出 `waiting-headers` 和精确的 `package=version` 请求；
+  `ensure-headers.sh` 是独立 CLI，拒绝在 dpkg maintainer script 中运行。无
+  `--install` 时只打印命令；当前 fixture 环境不运行 apt。
+- manifest 记录 KVER、架构、kernel/headers 包名、版本及摘要、signed 标记、PVE 与
+  Ubuntu commit、patch/源码快照摘要、`.config`/`Module.symvers` 摘要，以及为后续
+  阶段预留的 toolchain、vermagic、artifact 摘要字段。
+
+### 信任边界与限制
+
+- JSON 的 `trust.verified_by=apt-secure` 只保留为 fixture provenance，不能被
+  resolver 当作信任根。未带 `--fixture` 的伪造 marker 被测试拒绝。
+- 未来生产适配器须在 resolver 之前使用配置 keyring 让 `apt-secure(8)` 认证
+  `InRelease`，校验 `Packages` 对签名 Release 的摘要，下载精确 deb 并形成不可由
+  用户随意改写、且绑定包版本/SHA-256 的证据记录；然后从这两个 exact deb 提取
+  `SOURCE`、`.config` 与 `Module.symvers`。旁路 SHA256 文件或手写 JSON 均不足够。
+- 本环境没有实际 PVE kernel/headers 包、apt/dpkg 事务或目标源码快照；因此该适配器、
+  实际签名仓库认证、真实 package/SOURCE 映射及 headers 自动安装只能留待 G1/G3
+  环境完成。不得据此启动阶段 2 构建或宣称目标得到支持。
+
+### 验证记录
+
+- 通过：`bash -n tools/zram-multicomp/resolve.sh tools/zram-multicomp/ensure-headers.sh tools/zram-multicomp/lib/common.sh`
+- 通过：`jq empty tools/zram-multicomp/manifest-schema.json tools/zram-multicomp/tests/fixtures/target-7.0.14-16/release.json`
+- 通过：`tools/zram-multicomp/tests/test-resolve.sh`（输出 `resolver fixture tests passed`）
+- 通过：`git diff --check`
+- 测试覆盖精确 KREL/KREL_EXTRA、同 KVER 的不同包修订、signed kernel、未知版本、
+  缺 `SOURCE`、缺解包 headers（退出 75 与精确 headers 请求）、多内核 fixture，及
+  无 `--fixture` 的伪造 apt-secure JSON 标记。
+
+### 下一阶段入口
+
+阶段 2 仍被 G0/G1 阻塞：先取得经认证的实际 kernel 和 headers 包证据、实际
+`SOURCE` 映射与精确 Ubuntu 源码快照，并读取目标 ZRAM/Kconfig/依赖后，才能消费
+非 fixture target manifest。headers 安装的 apt/dpkg 锁、退避及并发行为属于 G3
+验证，不能由本轮 CLI fixture 替代。
+
+## 阶段 1 补充：真实受认证包证据（2026-09-06）
+
+官方 `pve-test` 的精确 `7.0.14-16-pve` kernel 与 headers 已取得。适配器以显式
+keyring 验证 `InRelease`，验证其中 `pve-test/binary-amd64/Packages.gz` 的 SHA-256，
+再验证精确 deb 摘要、control 字段和解出的 `SOURCE`、`.config`、`Module.symvers`。
+keyring 的来源及 SHA-256 记录在 `plans/zram-multicomp-evidence.md`；这不是带外公钥
+固定的声明。`SOURCE` 给出 PVE commit `42c567d939ee67d2c610b55dca4569a6e6d8e4ea`，
+只按数据解析。没有 apt 安装、内核、模块、服务或 swap 操作；headers 安装仍因 G3
+未验证而禁用。

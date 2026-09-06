@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pve.example.invalid/zram-multicomp/target.schema.json",
+  "title": "PVE ZRAM multi-comp exact target manifest",
+  "type": "object",
+  "required": ["schema_version", "resolution_status", "target", "headers", "source", "integrity", "build"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "resolution_status": {"enum": ["fixture-ready", "resolved", "waiting-headers", "waiting-source", "unsupported"]},
+    "target": {"type": "object", "required": ["kver", "architecture", "kernel_package"]},
+    "headers": {"type": "object", "required": ["status"]},
+    "source": {"type": "object", "required": ["pve_commit", "ubuntu_kernel_commit", "patches", "source_snapshot_sha256"]},
+    "integrity": {"type": "object", "required": ["kernel_package_sha256", "headers_package_sha256", "headers_config_sha256", "module_symvers_sha256"]},
+    "build": {"type": "object", "required": ["toolchain", "vermagic", "artifact_sha256"]}
+  },
+  "allOf": [{
+    "if": {"properties": {"resolution_status": {"const": "fixture-ready"}}},
+    "then": {"properties": {"headers": {"properties": {"status": {"const": "ready"}}}}}
+  }, {"if":{"properties":{"resolution_status":{"const":"unsupported"}}},"then":{"required":["error"],"properties":{"error":{"type":"string"}}}}]
+}
