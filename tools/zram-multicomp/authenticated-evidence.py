@@ -23,9 +23,9 @@ def fields(data):
    elif ': ' in line: key,val=line.split(': ',1); d[key]=val
   if d: out.append(d)
  return out
-def release_sha(inrelease, path):
+def release_sha(content, path):
  seen=False
- for line in Path(inrelease).read_text(encoding='utf-8',errors='strict').splitlines():
+ for line in content.splitlines():
   if line=='SHA256:': seen=True; continue
   if seen and re.match(r'^\S',line): break
   if seen:
@@ -46,14 +46,16 @@ def member(deb, name, fallback):
 def main():
  p=argparse.ArgumentParser()
  for n in ('kver','arch','kernel_package','headers_package','packages_path','keyring_provenance'): p.add_argument('--'+n.replace('_','-'),required=True)
- for n in ('keyring','inrelease','packages','kernel_deb','headers_deb','output'): p.add_argument('--'+n.replace('_','-'),type=Path,required=True)
+ for n in ('keyring','inrelease','packages','kernel_deb','output'): p.add_argument('--'+n.replace('_','-'),type=Path,required=True)
+ p.add_argument('--headers-deb',type=Path)
  p.add_argument('--pve-repo',type=Path); p.add_argument('--ubuntu-repo',type=Path)
  a=p.parse_args(); fallback=not bool(__import__('shutil').which('dpkg-deb'))
- for f in (a.keyring,a.inrelease,a.packages,a.kernel_deb,a.headers_deb):
+ for f in (a.keyring,a.inrelease,a.packages,a.kernel_deb):
   if not f.is_file(): fail(f'missing evidence input: {f}')
- try: subprocess.run(['gpgv','--keyring',str(a.keyring),str(a.inrelease)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+ if a.headers_deb and not a.headers_deb.is_file(): fail(f'missing evidence input: {a.headers_deb}')
+ try: v = subprocess.run(['gpgv','--output','-','--keyring',str(a.keyring),str(a.inrelease)],check=True,capture_output=True)
  except subprocess.CalledProcessError: fail('InRelease signature verification failed')
- expected=release_sha(a.inrelease,a.packages_path)
+ expected=release_sha(v.stdout.decode('utf-8', errors='strict'),a.packages_path)
  if digest(a.packages)!=expected: fail('Packages.gz digest does not match signed InRelease')
  try: entries=fields(gzip.open(a.packages,'rb').read())
  except Exception: fail('invalid Packages.gz')
@@ -67,7 +69,21 @@ def main():
   for k,v in [('Package',name),('Version',version),('Architecture',a.arch)]:
    if dpkg_field(deb,k,fallback)!=v: fail(f'deb control mismatch: {identity} {k}')
   return x
- kernel=exact(a.kernel_package,a.kernel_deb); headers=exact(a.headers_package,a.headers_deb)
+ kernel=exact(a.kernel_package,a.kernel_deb)
+ kname=a.kernel_package.split('=',1)[0]
+ if not a.headers_deb:
+  if '=' not in a.headers_package: fail('package identity must be NAME=VERSION')
+  hname,hversion=a.headers_package.split('=',1)
+  result={'schema_version':1,'resolution_status':'waiting-headers','trust':{'mode':'authenticated-apt-publication','keyring_sha256':digest(a.keyring),'keyring_provenance':a.keyring_provenance,'inrelease_sha256':digest(a.inrelease),'packages_path':a.packages_path,'packages_sha256':digest(a.packages),'extractor':'podman-dpkg-deb' if fallback else 'native-dpkg-deb'},'target':{'kver':a.kver,'architecture':a.arch,'kernel_package':{'name':kname,'version':kernel['Version'],'sha256':kernel['SHA256']}},'headers':{'status':'waiting','install_request':{'package':hname,'version':hversion}},'source':None,'integrity':None,'build':None,'reason':'headers_deb not provided'}
+  a.output.parent.mkdir(parents=True,exist_ok=True)
+  fd,tmp=tempfile.mkstemp(dir=a.output.parent,prefix='.target.'); os.close(fd)
+  try:
+   Path(tmp).write_text(json.dumps(result,sort_keys=True)+'\n'); os.replace(tmp,a.output)
+  finally:
+   if os.path.exists(tmp): os.unlink(tmp)
+  sys.exit(75)
+
+ headers=exact(a.headers_package,a.headers_deb)
  # These binary packages must be from the same explicitly-versioned source build.
  def source_id(x):
   raw=x.get('Source',''); m=re.fullmatch(r'([^ ]+)(?: \(([^)]+)\))?',raw)
